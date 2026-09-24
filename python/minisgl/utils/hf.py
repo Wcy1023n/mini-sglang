@@ -15,7 +15,7 @@ class DisabledTqdm(tqdm):
 
 
 def load_tokenizer(model_path: str) -> PreTrainedTokenizerBase:
-    tokenizer = AutoTokenizer.from_pretrained(model_path)
+    tokenizer = AutoTokenizer.from_pretrained(model_path , trust_remote_code=True , use_fast=False)
     # Some Mistral models store chat_template in a separate JSON file
     if not getattr(tokenizer, "chat_template", None):
         try:
@@ -29,7 +29,7 @@ def load_tokenizer(model_path: str) -> PreTrainedTokenizerBase:
 
 @functools.cache
 def _load_hf_config(model_path: str) -> Any:
-    return AutoConfig.from_pretrained(model_path)
+    return AutoConfig.from_pretrained(model_path , trust_remote_code=True)
 
 
 def cached_load_hf_config(model_path: str) -> PretrainedConfig:

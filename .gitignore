@@ -3,6 +3,9 @@ __pycache__/
 *.py[cod]
 *$py.class
 
+# jupyter checkpoints
+.ipynb_checkpoints/
+
 # installed packages
 *.dist-info/
 *.egg-info/

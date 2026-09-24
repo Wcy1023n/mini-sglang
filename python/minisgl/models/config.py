@@ -58,6 +58,8 @@ class ModelConfig:
 
         # Llama/Qwen: rope_theta is a direct attr; Mistral: it's inside rope_scaling dict
         rope_scaling = getattr(config, "rope_scaling", None)
+        if rope_scaling is not None and rope_scaling.get("type") == "dynamic":
+            rope_scaling = None
         rope_theta = getattr(config, "rope_theta", None) or rope_scaling["rope_theta"]
 
         return cls(

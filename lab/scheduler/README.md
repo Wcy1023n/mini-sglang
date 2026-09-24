@@ -1,0 +1,329 @@
+# Lab: 魔改 Scheduler，理解调度
+
+## 目标
+
+调度器是 mini-sglang 的心脏。scheduler lab 不教你「怎么用」调度器，而是让你**改 `_schedule_next_batch` 的调度策略**，通过观察每步 `prefill / decode` 的批次变化，把「chunked prefill、prefill-first、decode 饥饿」这几个概念变成你能在日志里亲眼看到的东西。
+
+核心动作：**在 `_schedule_next_batch` 里加一行观测日志，然后反复改调度器里那几个「排序 key / `or` 顺序」**——prefill 还是 decode 的 `or`（`scheduler.py:222`）、decode 的 `uid` 排序（`decode.py:35`）、prefill 的 `pending_list` 顺序（`prefill.py:126`）。每个都只是 1~2 行，但各自对应 SGLang 主仓库一个真实调度功能。
+
+## 为什么用「魔改」学调度
+
+`python/minisgl/scheduler/scheduler.py:219` 的 `_schedule_next_batch` 里，作者留了一行字：
+
+```python
+# TODO: support other policies: e.g. DECODE first
+```
+
+这行 TODO 几乎是在明示：**当前只有一个 prefill-first 策略，decode-first 是留给你的作业**。而理解调度器，最好的办法不是读代码，而是把 `_schedule_next_batch` 里的 `or` 顺序调一下、把 `max_extend_tokens` 改小，然后看输出的调度轨迹怎么变。
+
+## 关键文件地图
+
+| 文件 | 角色 | 关键符号 |
+|---|---|---|
+| `scheduler/scheduler.py` | 主循环 + 调度决策 | `overlap_loop`（`:83`）、`_schedule_next_batch`（`:219`）、`_forward`（`:227`）、`_process_last_data`（`:138`） |
+| `scheduler/prefill.py` | prefill 管理 + chunked prefill | `PrefillManager.schedule_next_batch`（`:126`）、`PrefillAdder`（`:32`）、`ChunkedReq`（`:23`） |
+| `scheduler/decode.py` | decode 管理 | `DecodeManager.schedule_next_batch`（`:32`）、`inflight_tokens`（`:27`） |
+| `scheduler/config.py` | `max_extend_tokens`（prefill budget） | `:16` |
+| `scheduler/cache.py` | 前缀缓存 + page 分配/驱逐 | `CacheManager` |
+| `core.py` | `Req` / `Batch` 状态机 | `extend_len`（`:49`）、`remain_len`（`:44`）、`can_decode`（`:59`） |
+
+## 对标 SGLang 主仓库
+
+调度器是 SGLang 的核心护城河，`python/sglang/srt/managers/` 下有一整套 mini-sglang 没有的东西。每个魔改都对应 SGLang 主仓库的一个真实功能：
+
+| SGLang 主仓库功能 | 位置 | mini-sglang 的最小版 | 本 lab 魔改 |
+|---|---|---|---|
+| `SchedulePolicy`（`lpm` / `random` / `fcfs` / `dfs-weight` / priority，入口 `calc_priority`） | `sglang/srt/managers/schedule_policy.py` | 无策略抽象：`_schedule_next_batch` 硬编码 prefill-first，decode 按 `uid` 排序 = FCFS | Phase 1（decode-first）+ Phase 5（SRPT）+ Phase 6（LPM）：把「策略」落成排序 key |
+| `PrefillAdder.add_one_req`（3 个 token budget + `AddReqResult` + chunked prefill） | `schedule_policy.py` | `prefill.py` 的 `PrefillAdder.try_add_one`（单 budget + chunked） | Phase 2：`max_extend_tokens` 触发 chunked prefill（读预算链，不重写） |
+| `--enable-priority-scheduling`（`_sort_by_priority_and_fcfs`） | `schedule_policy.py` | 无（decode 按 `uid` = FCFS） | Phase 4：给 `SamplingParams` 加 `priority` + 排序 |
+| RadixCache 前缀缓存 | `sglang/srt/mem_cache/radix_cache.py` | `kvcache/radix_cache.py` + `scheduler/cache.py` | Phase 6：LPM 按前缀命中排序 |
+| overlap scheduling | `scheduler.py` | `scheduler.py` 的 `overlap_loop` / `normal_loop` | 环境注意事项里的 `DISABLE_OVERLAP_SCHEDULING` |
+
+练完之后要承接的关键差异：
+
+- SGLang 的 `calc_priority` 把「选哪个请求先跑」抽象成**可插拔策略**（`--schedule-policy`，默认 `fcfs`），`lpm` / `dfs-weight` 还会读 RadixCache 的前缀命中来排序。mini-sglang 把策略**写死**成 prefill-first + FCFS——Phase 1 的 decode-first 魔改就是在理解「写死」的位置，进阶魔改则是把策略抽出来。
+- SGLang 的 `PrefillAdder.add_one_req` 维护 **3 个 token budget**（`rem_total_tokens` / `rem_input_tokens` / `rem_chunk_tokens`），返回 `AddReqResult`（`NO_TOKEN` / `OTHER` / `CONTINUE`）。mini-sglang 的 `PrefillAdder` 只有 1 个 `token_budget`，返回 `Req | None`——Phase 2 走一遍这条预算链。
+
+---
+
+## 验收标准
+
+| # | 检查 | 现象 |
+|---|---|---|
+| 1 | 观测日志就位 | `python lab/scheduler/observe.py` 输出一串 `P/D` 开头的 per-step 轨迹 |
+| 2 | 理解 prefill-first 默认策略 | 能解释轨迹里为什么长 prompt 先于短 prompt 完成全部 prefill |
+| 3 | decode-first 魔改 | 调换 `_schedule_next_batch` 的优先级后，短 prompt 的 prefill 被饿死 29 步（`D bs=1` 连打 29 行） |
+| 4 | chunked prefill 说清楚 | 能解释长 prompt 为什么被拆成 7 个 `P bs=1`，以及 `ChunkedReq.can_decode=False` 的作用 |
+| 5 | 公平性魔改（进阶） | 实现 round-robin，轨迹里 `P`/`D` 交替出现，谁都不饿死 |
+| 6 | priority 调度 | `--priority` 下短 prompt（高 priority）先于长 prompt prefill；把某短 prompt 的 priority 改成 0 后它被挤到后面 |
+| 7 | SRPT 短作业优先 | 默认负载下 `P bs=6 tokens=24`（短 prompt）先于长 prompt 的 chunk 出现 |
+| 8 | LPM 前缀命中优先 | `--shared-prefix 100` 下，首条请求 prefill 前缀后，后续请求的 `tokens=` 骤降到只剩尾巴 |
+
+---
+
+## 先走一遍调用路径
+
+魔改之前，先把整条路径在脑子里过一遍。每次调度循环都是这条链：
+
+```
+Scheduler.run_forever              (scheduler.py:120)
+  └─ overlap_loop / normal_loop    (scheduler.py:83 / :108)
+       ├─ receive_msg              → 把 UserMsg 灌进 prefill_manager（_process_one_msg :169）
+       ├─ _schedule_next_batch     (scheduler.py:219)  ← 决策点：选 prefill 还是 decode
+       │    ├─ prefill_manager.schedule_next_batch   (prefill.py:126)
+       │    └─ decode_manager.schedule_next_batch    (decode.py:32)
+       ├─ _prepare_batch           (scheduler.py:204) → 分配 page、算 positions、准备 attn metadata
+       ├─ _forward                 (scheduler.py:227) → engine.forward_batch 跑模型 + sample
+       └─ _process_last_data       (scheduler.py:138) → 收 token、判 finished、释放资源
+```
+
+本 lab 的三个魔改，分别落在 `_forward` 观测（Phase 0）、`_schedule_next_batch` 决策（Phase 1/3）、`max_extend_tokens` 这条 budget 链（Phase 2）上。改之前先定位到这条链的哪一环，改完用 Phase 0 的日志验证。
+
+---
+
+## Phase 0 — 搭观测（一切的前提）
+
+调度器是个无限循环（`run_forever`，`scheduler.py:120`），每次迭代 `_schedule_next_batch` 选出一个 `Batch`（要么全是 prefill，要么全是 decode）去跑。你要做的第一件事，是让 `_schedule_next_batch` 的选择「可见」。
+
+**魔改 1**：在 `_schedule_next_batch`（`scheduler.py:219`）里，`batch = (...)` 之后、`return ...` 之前加一行：
+
+```python
+if batch is not None:
+    n_tokens = sum(r.extend_len for r in batch.reqs)
+    print(f"[sched] {batch.phase:7s} bs={batch.size:3d} tokens={n_tokens:4d}", flush=True)
+```
+
+> `batch.reqs` 里每个 `Req` 的 `extend_len`（`core.py:49`）= `device_len - cached_len`，对 prefill 是本步要算的 prompt 长度，对 decode 是 1。所以 `tokens` 就是「本步喂给 GPU 的 token 数」。`flush=True` 是为了让 print 不被缓冲，顺序和调度一致。
+
+然后跑（需要 GPU）：
+
+```bash
+python lab/scheduler/observe.py
+```
+
+**checkpoint 1**：你会看到类似这样的输出（先别纠结具体数字，看 `P`/`D` 的结构）：
+
+```
+[sched] prefill bs=1 tokens=32
+[sched] prefill bs=1 tokens=32
+[sched] prefill bs=1 tokens=32
+[sched] prefill bs=1 tokens=32
+[sched] prefill bs=1 tokens=32
+[sched] prefill bs=1 tokens=32
+[sched] prefill bs=1 tokens=8
+[sched] prefill bs=6 tokens=24
+[sched] decode  bs=7 tokens=7
+[sched] decode  bs=7 tokens=7
+...
+```
+
+> 注意：print 加在**共享源码 `scheduler.py`** 里，会影响所有跑在本仓库的推理。做完 lab 记得把 print 去掉，或者用 `if os.environ.get("MINISGL_TRACE_SCHED"):` 包一层再还原。
+
+## Phase 1 — prefill-first 默认策略 + decode-first 魔改
+
+先读 `_schedule_next_batch`（`scheduler.py:219-225`）：
+
+```python
+batch = (
+    self.prefill_manager.schedule_next_batch(self.prefill_budget)
+    or self.decode_manager.schedule_next_batch()
+)
+```
+
+`A or B` 的含义：只要还有能 prefill 的请求，就**永远优先 prefill**，decode 只在没有 prefill 时兜底。这条 `or` 就是 **prefill-first**。Phase 0 的轨迹里「长 prompt 的 7 个 prefill 全跑完，短 prompt 才开始 prefill」就是 prefill-first 的直接后果。
+
+**魔改 2（decode-first）**：把 `or` 两边调换：
+
+```python
+batch = (
+    self.decode_manager.schedule_next_batch()
+    or self.prefill_manager.schedule_next_batch(self.prefill_budget)
+)
+```
+
+再跑 `observe.py`。**checkpoint 2、3**：对比轨迹，你会看到长 prompt 的 7 个 prefill 结束后，**没有立刻 prefill 短 prompt**，而是：
+
+```
+[sched] prefill bs=1 tokens=8      <- 长 prompt 最后一个 chunk，进入 decode
+[sched] decode  bs=1 tokens=1      <- 长 prompt 开始解码
+[sched] decode  bs=1 tokens=1      <- 一直解码……短 prompt 的 prefill 被饿死
+...（连打 29 行 D bs=1）
+[sched] prefill bs=6 tokens=24     <- 长 prompt 解码完毕，短 prompt 才轮到 prefill
+[sched] decode  bs=6 tokens=6
+```
+
+上面就是经典的 **decode-first 饿死 prefill**：只要有一个请求在 decode，所有还没 prefill 的请求就得无限等下去。prefill-first 默认值之所以是默认值，就是为了避免这种饥饿（代价是反过来：一个超长 prefill 会卡住所有 decode，见 Phase 3）。
+
+## Phase 2 — chunked prefill（`max_extend_tokens`）
+
+为什么长 prompt（200 token）会变成 7 个 `P bs=1`，而不是一步 prefill 完？答案在 `prefill.py`：
+
+- `PrefillManager.schedule_next_batch`（`prefill.py:126`）每次从 `pending_list` 里尽量装请求，但受 `PrefillAdder` 的 `token_budget` 限制；
+- `token_budget` 就是 `scheduler.py:72` 的 `self.prefill_budget = config.max_extend_tokens`，默认 8192（`scheduler/config.py:16`），而 `observe.py` 把 `max_extend_tokens` 设成了 32；
+- `_add_one_req`（`prefill.py:72-75`）：
+
+```python
+remain_len = pending_req.input_len - cached_len
+chunk_size = min(self.token_budget, remain_len)
+is_chunked = chunk_size < remain_len
+```
+
+当 `chunk_size < remain_len` 时，请求被装进 `ChunkedReq`（`prefill.py:23`），`ChunkedReq.can_decode` 恒为 `False`（`prefill.py:29`）——也就是说 `ChunkedReq` **只 prefill、不进 decode 队列**，剩下的部分继续留在 `pending_list` 等下一轮。
+
+**实验（不改代码，只改参数）**：把 `observe.py` 的 `--budget` 从 32 改成 8192（或直接 200 以上），再跑：
+
+```bash
+python lab/scheduler/observe.py --budget 8192
+```
+
+**checkpoint 4**：长 prompt 现在应该一步 prefill 完（`P bs=1 tokens=200`），不再是 7 步。解释：
+
+1. 为什么 `budget=8192` 时长 prompt 一步就 prefill 完？（`chunk_size = min(8192, 200) = 200`，`is_chunked = False`）
+2. `ChunkedReq.can_decode=False` 在调度里起了什么作用？（`can_decode=False` 阻止 chunked 请求被 `_forward` 之后加进 `DecodeManager`，见 `scheduler.py:232` 的 `filter_reqs` 和 `decode.py:14` 的 `if req.can_decode`）
+
+> 补充理解：chunked prefill 的意义是**把长 prompt 的 prefill 拆散，让 decode 能插进来**，避免一个超长 prefill 独占 GPU 把别的请求的解码全卡住。配合 `--budget` 从小到大，观察「长 prefill 独占 GPU」到「prefill/decode 交错」的过渡。
+
+## Phase 3 — 公平性（进阶，选做）
+
+Phase 1 里你看到了 decode-first 饿死 prefill；Phase 0 的 prefill-first 其实也饿死 decode——只是方向相反（一个超长 prefill 会占满多步，期间 decode 全停）。一个公平的调度器应该让两者**轮流**。
+
+**魔改 3（round-robin）**：让 prefill 和 decode 每一步交替。思路是给 `Scheduler` 记一个「上一步是什么」的状态，`_schedule_next_batch` 据此决定这步优先谁。比如在 `__init__` 里加 `self._last_phase = "decode"`，然后：
+
+```python
+# 伪代码：prefill 和 decode 轮流优先
+prefer_prefill = (self._last_phase != "prefill")
+batch = (
+    self.prefill_manager.schedule_next_batch(self.prefill_budget)
+    if prefer_prefill
+    else self.decode_manager.schedule_next_batch()
+)
+if batch is None:
+    batch = (
+        self.decode_manager.schedule_next_batch()
+        if prefer_prefill
+        else self.prefill_manager.schedule_next_batch(self.prefill_budget)
+    )
+if batch is not None:
+    self._last_phase = batch.phase
+```
+
+（实现方式不唯一，只要能达到「交替」就行。）
+
+**checkpoint 5**：轨迹里 `P` 和 `D` 交替出现，长 prompt 的 chunk 和短 prompt 的 decode 交错，谁都不饿死。
+
+> 想再进一步（现已升级为 Phase 5）：Phase 0 里短 prompt 之所以排在长 prompt 后面，是因为 `pending_list` 是 FIFO。Phase 5 的 SRPT 魔改就是按 `input_len` 从小到大排 `pending_list`，观察 prefill-first 下短 prompt 不再被长 prompt 卡住。
+
+---
+
+## Phase 4 — priority 调度（显式优先级）
+
+对应 SGLang 的 `--enable-priority-scheduling`（`_sort_by_priority_and_fcfs`）。mini-sglang 现在 decode 按 `uid` 排序（`decode.py:35`）= FCFS，prefill 按 `pending_list` 的 FIFO 顺序。priority 把「谁先跑」变成请求自己声明的字段，而不是被 `uid` / 到达顺序写死。
+
+**魔改 4a**：`core.py:16` 的 `SamplingParams` 加一个字段 `priority: int = 0`。
+
+`Req` 已经持有 `sampling_params`（`core.py:35`），所以 `req.sampling_params.priority` 直接可读，**不用在 `Req` / `PendingReq` 上再穿一层**——这是 priority 改动小的原因。
+
+**魔改 4b**：`prefill.py:126` 在 `for pending_req in self.pending_list:` 之前加排序：
+
+```python
+self.pending_list.sort(key=lambda r: (-r.sampling_params.priority, r.uid))
+```
+
+`-priority` 表示 priority 越大越先，`uid` 做 tie-break 保持稳定。排序放在 prefill 准入循环之前，是因为这里决定「这一轮预算先给谁」。
+
+> SGLang 真正改的是 decode 侧：`_sort_by_priority_and_fcfs` 排的是 running 队列。你也可以顺手把 `decode.py:35` 的 `key=lambda req: req.uid` 换成 `key=lambda req: (-req.sampling_params.priority, req.uid)`。但 decode 排序对**离线输出没有影响**（`_process_last_data` 按 `status_map` 回填 token），所以本 lab 用 prefill 准入顺序来观察，更直观。
+
+**checkpoint**：`python lab/scheduler/observe.py --priority`。`--priority` 给 R0(长) priority=0 最低、R1..R6 递增。轨迹里**短 prompt 先 prefill、长 prompt 最后**——和默认 FIFO（长先）相反。
+
+**为什么不是 SRPT**：把 `observe.py` 里某条短 prompt 的 `priority` 改成 0（和长 prompt 一样低）再跑，这个短 prompt 会排到长 prompt 之后，即使它很短。证明决定顺序的是 `priority` 字段，不是长度。
+
+## Phase 5 — SRPT 短作业优先
+
+对应 SGLang 的 short-job-first / SRPT 思想。prefill 的 `pending_list` 是 FIFO，一条长 prompt 会独占预算、把后面的短 prompt 全卡住。按 `input_len` 升序排，让短 prompt 先 prefill。
+
+**魔改 5**：`prefill.py:126` 加：
+
+```python
+self.pending_list.sort(key=lambda r: r.input_len)
+```
+
+（`PendingReq.input_len` 见 `scheduler/utils.py:22`。）
+
+**checkpoint**：`python lab/scheduler/observe.py`（默认负载 1 长 + 6 短）。轨迹从「长 prompt 的 7 个 chunk 先跑」变成「`P bs=6 tokens=24`（6 个短 prompt）先跑，长 prompt 的 chunk 最后」。
+
+> 对比：Phase 4 的 priority 是**显式字段**排序，Phase 5 的 SRPT 是**按长度隐式**排序。二者排序 key 不同，但都落在 `prefill.py:126` 这同一个决策点。
+
+## Phase 6 — LPM 前缀命中优先
+
+对应 SGLang 的 `lpm`（longest-prefix-match）策略：按前缀缓存命中长度排序，共享前缀的请求排在一起，命中缓存的请求只需算尾巴。mini-sglang 的 RadixCache（`kvcache/radix_cache.py`）一直在算 `cached_len`（`cache.py:27` 的 `match_req`），但调度没用上——这是纯浪费。
+
+**魔改 6**：`prefill.py:126` 加：
+
+```python
+self.pending_list.sort(key=lambda r: -self.cache_manager.match_req(r).cuda_handle.cached_len)
+```
+
+`match_req` 是只读的 radix 查找、无副作用，返回的 `MatchResult.cuda_handle.cached_len` 就是这条请求已命中的前缀长度。按 `cached_len` 降序排，命中多的先跑。
+
+**checkpoint**：`python lab/scheduler/observe.py --shared-prefix 100`。负载变成「N 条共享 100-token 前缀、尾巴各不同」的请求。轨迹里：第一条请求把 100-token 前缀 prefill 并缓存后，后续请求的 `tokens=` 骤降到只剩尾巴（约 4），因为 `cached_len=100` 的前缀命中了 RadixCache，只需算非缓存的尾巴。
+
+> 建议先不改排序、直接跑 `--shared-prefix 100` 看 FIFO 下的轨迹（缓存命中靠「运气」——恰好相邻的请求才共享前缀），再改成 LPM 排序对比：LPM 会把共享前缀的请求**稳定地**排在一起，让缓存命中从「碰运气」变成「必然」。
+
+---
+
+## 建议的推进顺序
+
+```
+Phase 0  加观测日志                     checkpoint 1（必须先做）
+Phase 1  读 _schedule_next_batch + 魔改 decode-first   checkpoint 2、3
+Phase 2  用 --budget 理解 chunked prefill             checkpoint 4
+Phase 3  round-robin 公平性（选做）                    checkpoint 5
+Phase 4  priority 调度（SamplingParams 加 priority + 排序）  checkpoint 6
+Phase 5  SRPT 短作业优先（prefill 按 input_len 排序）       checkpoint 7
+Phase 6  LPM 前缀命中优先（prefill 按 cached_len 排序）     checkpoint 8
+```
+
+Phase 0 和 Phase 1 是主线，Phase 2 是理解 chunked prefill 的钥匙。Phase 4/5/6 是把「调度策略」落成**排序 key**（priority / SRPT / LPM）——三者都是 1~2 行的外科手术，改动都集中在 `prefill.py:126`（和 Phase 4 的 `core.py:16`），但各自对应一个 SGLang 主仓库的真实功能。Phase 3 是拔高选做。
+
+## 环境注意事项
+
+- 需要 GPU。`observe.py` 默认 `use_dummy_weight=True`（随机权重），**不需要真实权重、不需要 model lab 完成**，起得快、只看调度行为。
+- 默认模型是 `Qwen/Qwen3-0.6B`（已注册，config/tokenizer 已缓存）。如果你已完成 model lab，也可以 `--model /root/models/internlm2_5-1_8b-chat` 换成真实模型（但随机权重下调度行为完全一样）。
+- 后端走 `fi`，别动 `--attention-backend`。
+- 魔改的 print 在**共享源码**里，做完记得还原或用环境变量包一层。
+- 想理解主循环里 `overlap_loop`（`scheduler.py:83`）vs `normal_loop`（`scheduler.py:108`）的区别，可以先读再设 `MINISGL_DISABLE_OVERLAP_SCHEDULING=1`（`env.py:69`）跑一次对比——overlap 是把「当前 batch 的 GPU 计算」和「上一 batch 结果的 CPU 后处理」重叠，本 lab 的调度顺序不受 overlap 影响，但 overlap 是理解 `_process_last_data`（`scheduler.py:138`）为何从 `overlap_loop` 的返回值里拿数据的关键。
+
+## 卡住了再看
+
+<details>
+<summary>提示 A：decode-first 饿死 prefill 的完整轨迹</summary>
+
+`observe.py` 默认 workload：R0（200 token）+ R1..R6（各 4 token），`budget=32`，`decode-len=30`。
+
+prefill-first（默认）与 decode-first 的唯一区别，是「R0 进入 decode 之后，R1..R6 何时 prefill」：
+
+- prefill-first：R0 的 7 个 chunk 结束后，立刻 `P bs=6 tokens=24`，然后一起 decode。
+- decode-first：R0 的 7 个 chunk 结束后，`D bs=1` 连打 29 行（R0 一个人解码到结束），之后才 `P bs=6`。
+
+为什么是 29 行而不是 `decode-len=30`？第 1 个输出 token 由 prefill 那步产出（`Engine.forward_batch` 里 prefill 也会 `sample` 一次，见 `engine.py:199-202`），所以 decode 只需再跑 `max_tokens − 1 = 29` 步。数不到 29 时检查 `ignore_eos` 是不是 `True`（`ignore_eos=True` 时 finish 只看 `max_tokens`，`scheduler.py:153-155`）。
+
+</details>
+
+<details>
+<summary>提示 B：为什么长 prompt 恰好是 7 个 chunk</summary>
+
+200 token，`budget=32`：每次 `chunk_size = min(32, remain)`，`is_chunked = chunk_size < remain`。
+
+- 前 6 次各 32（`remain` 依次 200→168→…→40→8），每次都 `is_chunked=True`，装进 `ChunkedReq`。
+- 第 7 次 `remain=8`，`chunk_size=min(32,8)=8`，此时 `8 < 8` 为 `False`，所以第 7 个 chunk 是普通 `Req`（可以 decode 了）。
+
+所以是 6×32 + 1×8 = 7 步。换成 `budget=8192` 时 `min(8192,200)=200`，一步搞定、`is_chunked=False`。
+
+</details>
+
+<details>
+<summary>提示 C：为什么观测点选 `_schedule_next_batch` 而不是 `_forward`</summary>
+
+`_schedule_next_batch` 是「决策点」——决定这一步跑 prefill 还是 decode。`_forward` 是「执行点」，但 `_forward` 的输入 `batch` 就是决策结果。两个地方都能拿到 `batch`，但 `_schedule_next_batch` 离「策略」最近，改优先级（Phase 1）和加观测（Phase 0）都集中在 `_schedule_next_batch`，最直观。
+
+</details>

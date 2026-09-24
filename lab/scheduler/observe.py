@@ -4,16 +4,26 @@
 强制长 prompt 被 chunked prefill 切成多块，从而让 prefill 和 decode 在时间上交错。
 这样你在 scheduler.py 里加的观测日志就能看清 prefill-first vs decode-first 的差别。
 
-三种变体负载，分别对应 README 里的排序魔改：
+三种变体负载，分别对应 scheduler.ipynb 里的排序魔改：
 
     python lab/scheduler/observe.py                 # 默认：1 长 + N 短（Phase 0/1/2/5 用）
     python lab/scheduler/observe.py --priority      # 递进 priority（Phase 4 用，需先给 SamplingParams 加 priority）
     python lab/scheduler/observe.py --shared-prefix 100   # 共享前缀 + 不同尾巴（Phase 6 LPM 用）
 
 注意：本脚本本身不打印调度轨迹。轨迹来自你在 scheduler.py 的
-`_schedule_next_batch` 里加的 per-step 日志（见 lab/scheduler/README.md 的 Phase 0）。
+`_schedule_next_batch` 里加的 per-step 日志（见 lab/scheduler/scheduler.ipynb 的 Phase 0）。
 """
 from __future__ import annotations
+
+import platform
+
+if platform.system() != "Linux":
+    raise RuntimeError("This experiment must run on the Linux CUDA server.")
+
+import torch
+
+if not torch.cuda.is_available():
+    raise RuntimeError("This experiment requires an NVIDIA CUDA GPU.")
 
 import argparse
 

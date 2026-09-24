@@ -1,0 +1,25 @@
+{
+  "workbench.colorTheme": "Light 2026",
+  "notebook.cellFocusIndicator": "gutter",
+  "notebook.insertToolbarLocation": "notebookToolbar",
+  "notebook.globalToolbar": true,
+  "notebook.compactView": true,
+  "notebook.showCellStatusBar": "visible",
+  "notebook.cellToolbarLocation": {
+    "default": "right"
+  },
+  "notebook.markup.fontSize": 16,
+  "notebook.markdown.lineHeight": 26,
+  "notebook.output.fontSize": 14,
+  "notebook.output.lineHeight": 22,
+  "notebook.output.wordWrap": true,
+  "notebook.output.scrolling": true,
+  "workbench.colorCustomizations": {
+    "notebook.cellEditorBackground": "#F8FAFC",
+    "notebook.cellBorderColor": "#D0D7DE",
+    "notebook.focusedCellBorder": "#4F46E5",
+    "notebook.cellInsertionIndicator": "#4F46E5",
+    "notebook.outputContainerBackgroundColor": "#FFFFFF",
+    "notebook.outputContainerBorderColor": "#D0D7DE"
+  }
+}

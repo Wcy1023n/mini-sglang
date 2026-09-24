@@ -1,6 +1,6 @@
 """Phase 3 的 profiler 驱动：驱动魔改后的 `Scheduler.report_profile`。
 
-前提：已经按 README Phase 3 在 `scheduler/scheduler.py` 里加了
+前提：已经按 bench_profiler.ipynb Phase 3 在 `scheduler/scheduler.py` 里加了
 `self._profile` 容器、`_forward` 里的 CUDA Event 计时、以及 `report_profile` 方法。
 
 `LLM` 是 `Scheduler` 的子类，所以 `llm.report_profile()` 直接可用。
@@ -10,6 +10,16 @@
     python lab/bench_profiler/profile.py
 """
 from __future__ import annotations
+
+import platform
+
+if platform.system() != "Linux":
+    raise RuntimeError("This experiment must run on the Linux CUDA server.")
+
+import torch
+
+if not torch.cuda.is_available():
+    raise RuntimeError("This experiment requires an NVIDIA CUDA GPU.")
 
 from minisgl.core import SamplingParams
 from minisgl.llm import LLM

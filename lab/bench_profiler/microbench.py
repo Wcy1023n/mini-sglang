@@ -9,7 +9,15 @@ Phase 1 需要先魔改 `benchmark/perf.py` 的 `perf_cuda`，加一个 `warmups
 """
 from __future__ import annotations
 
+import platform
+
+if platform.system() != "Linux":
+    raise RuntimeError("This experiment must run on the Linux CUDA server.")
+
 import torch
+
+if not torch.cuda.is_available():
+    raise RuntimeError("This experiment requires an NVIDIA CUDA GPU.")
 
 from minisgl.benchmark.perf import compare_memory_kernel_perf, perf_cuda
 

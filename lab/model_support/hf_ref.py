@@ -12,25 +12,28 @@ Two quirks worth knowing, both of which are why this is a standalone script:
 2. The tokenizer needs `use_fast=False`: the slow->fast sentencepiece converter
    is broken for this vocab under transformers 4.57.
 
-Usage:  python lab/hf_ref.py
+Usage:  python lab/model_support/hf_ref.py
 """
 
 import json
 import os
 
+from server_only import require_server_model_path
+
+MODEL_PATH = require_server_model_path()
+
 import torch
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
-PATH = os.environ.get("MODEL_PATH", "/root/models/internlm2_5-1_8b-chat")
 PROMPT = "用一句话解释什么是张量并行。"
 NUM_TOKENS = 16
 OUT = os.path.join(os.path.dirname(os.path.abspath(__file__)), "hf_ref.json")
 
 
 def main() -> None:
-    tok = AutoTokenizer.from_pretrained(PATH, trust_remote_code=True, use_fast=False)
+    tok = AutoTokenizer.from_pretrained(MODEL_PATH, trust_remote_code=True, use_fast=False)
     model = AutoModelForCausalLM.from_pretrained(
-        PATH, trust_remote_code=True, dtype=torch.bfloat16, device_map="cuda"
+        MODEL_PATH, trust_remote_code=True, dtype=torch.bfloat16, device_map="cuda"
     ).eval()
 
     text = tok.apply_chat_template(

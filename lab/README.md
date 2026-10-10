@@ -1,5 +1,18 @@
 # SGLang 系统实验毕业表
 
+## 先检查运行环境
+
+在 Linux + NVIDIA CUDA 服务器的仓库根目录运行：
+
+```bash
+python lab/check_mini.py
+python lab/check_mini.py --smoke --model Qwen/Qwen3-0.6B
+```
+
+第一条只检查 Python、依赖、GPU 和 CUDA；第二条使用 dummy weight 跑离线 prefill/decode 与 Radix Cache 前缀复用，仍需要模型 config/tokenizer（可以把 `--model` 换成本地模型目录）。想检查真实权重，加 `--real-weights`；想顺带启用 CUDA Graph，加 `--graph`。若 HTTP 服务已启动，再运行 `python lab/check_mini.py --server-url http://127.0.0.1:1919` 检查模型列表和 token streaming。脚本逐项报告 PASS/FAIL/WARN/SKIP；失败时可加 `--verbose` 看堆栈。
+
+这个自检不传 scheduler lab 的 `observe` 参数，因此可以在 Phase 0 尚未实现时先确认 mini 的基础推理路径。它不能替代各 notebook 的专项验收。
+
 每项都以“能画调用链、提出反例、修改一处真实机制、用行为和测量验证”为通过标准。`已有实验`表示有可运行的题目，**不表示你已经完成**。各 notebook 中未实现的功能由学习者完成。
 
 | # | 毕业能力 | 当前实验入口 | 尚缺的证据 |

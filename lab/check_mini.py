@@ -9,7 +9,9 @@ from __future__ import annotations
 import argparse
 import importlib.util
 import json
+import os
 import platform
+import re
 import shutil
 import subprocess
 import sys
@@ -27,6 +29,23 @@ def record(name: str, status: str, detail: str) -> None:
     print(f"[{status:4}] {name}: {detail}", flush=True)
 
 
+def check_openmp() -> None:
+    value = os.environ.get("OMP_NUM_THREADS")
+    if value is None:
+        record("OMP_NUM_THREADS", "PASS", "unset; using the runtime default")
+        return
+    parts = [part.strip() for part in value.split(",")]
+    valid = all(re.fullmatch(r"[0-9]+", part) and part.lstrip("0") for part in parts)
+    if valid:
+        record("OMP_NUM_THREADS", "PASS", f"positive-integer list: {value!r}")
+    else:
+        record(
+            "OMP_NUM_THREADS",
+            "WARN",
+            f"invalid value {value!r}; unset OMP_NUM_THREADS before rerunning",
+        )
+
+
 def check_environment() -> bool:
     python_status = (
         "FAIL" if sys.version_info < (3, 10) else "WARN" if sys.version_info >= (3, 13) else "PASS"
@@ -34,6 +53,7 @@ def check_environment() -> bool:
     record("Python", python_status, f"{sys.version.split()[0]} (repository setup recommends 3.12)")
     record("platform", "PASS" if platform.system() == "Linux" else "FAIL", platform.platform())
     record("repository", "PASS" if Path.cwd().resolve() == ROOT else "WARN", str(ROOT))
+    check_openmp()
 
     for package in ("minisgl", "transformers", "flashinfer", "sgl_kernel", "tvm_ffi"):
         try:

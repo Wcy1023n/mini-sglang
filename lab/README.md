@@ -13,6 +13,8 @@ python lab/check_mini.py --smoke --model Qwen/Qwen3-0.6B
 
 这个自检不传 scheduler lab 的 `observe` 参数，因此可以在 Phase 0 尚未实现时先确认 mini 的基础推理路径。它不能替代各 notebook 的专项验收。
 
+`--smoke` 在独立 Python 子进程中初始化 mini，避免环境探测提前初始化 CUDA；只配置 128 页 KV cache，减少基础检查占用的显存。
+
 若出现 `libgomp: Invalid value for environment variable OMP_NUM_THREADS`，脚本会报告 WARN。可先在同一终端运行 `unset OMP_NUM_THREADS`，再重跑自检与 `--smoke`；这只移除当前终端的设置，不修改你的 shell 配置。
 
 每项都以“能画调用链、提出反例、修改一处真实机制、用行为和测量验证”为通过标准。`已有实验`表示有可运行的题目，**不表示你已经完成**。各 notebook 中未实现的功能由学习者完成。

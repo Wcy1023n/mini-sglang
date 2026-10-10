@@ -135,7 +135,8 @@ def check_offline(model: str, real_weights: bool, graph: bool) -> None:
         max_extend_tokens=32,
         max_seq_len_override=256,
         max_running_req=2,
-        cuda_graph_max_bs=2 if graph else 0,
+        num_page_override=128,
+        cuda_graph_bs=[1, 2] if graph else [],
     )
     try:
         long_prompt = list(range(1000, 1064))
@@ -201,15 +202,32 @@ def main() -> int:
     parser.add_argument("--server-url", help="check an already running Mini-SGLang HTTP server")
     parser.add_argument("--timeout", type=float, default=120, help="HTTP request timeout in seconds")
     parser.add_argument("--verbose", action="store_true", help="show tracebacks for failed checks")
+    parser.add_argument("--_offline-worker", action="store_true", help=argparse.SUPPRESS)
     args = parser.parse_args()
-    if (args.real_weights or args.graph) and not args.smoke:
+    if (args.real_weights or args.graph) and not (args.smoke or args._offline_worker):
         parser.error("--real-weights and --graph require --smoke")
+
+    # GPU environment probes initialize CUDA; Engine must initialize it in a fresh process.
+    if args._offline_worker:
+        try:
+            check_offline(args.model, args.real_weights, args.graph)
+            return 0
+        except Exception as error:
+            record("offline smoke", "FAIL", f"{type(error).__name__}: {error}")
+            if args.verbose:
+                traceback.print_exc()
+            return 1
 
     ready = check_environment()
     if args.smoke:
         if ready and not any(status == "FAIL" for _, status, _ in results):
             try:
-                check_offline(args.model, args.real_weights, args.graph)
+                command = [sys.executable, str(Path(__file__).resolve()), "--_offline-worker", "--model", args.model]
+                for option in ("real_weights", "graph", "verbose"):
+                    if getattr(args, option):
+                        command.append("--" + option.replace("_", "-"))
+                worker = subprocess.run(command)
+                record("offline smoke", "PASS" if worker.returncode == 0 else "FAIL", f"fresh process exit code {worker.returncode}")
             except Exception as error:
                 record("offline smoke", "FAIL", f"{type(error).__name__}: {error}")
                 if args.verbose:

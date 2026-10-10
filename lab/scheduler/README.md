@@ -4,7 +4,7 @@
 
 | 原实验 | 当前形式 | notebook 验收 |
 |---|---|---|
-| Phase 0：搭观测 | 小范围临时源码观测 + 外部轨迹核对 | `mixed --check`、`long-first --check` |
+| Phase 0：搭观测 | 给 mini 增加 `observe=0/1` 日志开关，对照外部轨迹 | notebook 比较开关两种输出；`long-first --observe 0 --check` |
 | Phase 1：decode-first | 可撤销的动手对照；使用能区分两种顺序的负载 | `stage-order --expect-stage-order ...` |
 | Phase 2：chunked prefill | 两种总 budget 的动手观察 | `long-first --expect-chunks ...` |
 | Phase 3：round-robin | 理论题：两阶段都可运行时的交替及空缺处理 | `mixed --check` 验证饥饿反例，再交推导轨迹 |
@@ -12,4 +12,4 @@
 | Phase 5：SRPT | 理论题：原始长度、剩余 prefill 与完整请求工作量 | `shortest-theory --check` 验证长请求先行，再交反例 |
 | Phase 6：LPM | 理论题：缓存复用与排序效果分离 | `lpm-theory --check` 验证 FCFS 基线，再交 LPM 预期 |
 
-理论题的代码块验收的是**提出问题所依赖的真实基线**，不代表策略已经实现。A `prefill_decode_interval`、B `prefill_max_requests`、C `chunked_prefill_size` 各有另外的行为验收。原版 Phase 1 使用 200-token 长 prompt 时，最后一块可能与短请求合批，不能稳定显示 decode-first 造成的等待；当前专用负载用 192 token 消除了这个歧义。
+`observe.py` 的 `[sched]` 是实验脚本提供的外部轨迹；Phase 0 的 `[mini-observe]` 是学生要在 mini 内实现的可开关日志。除 Phase 0 的 `observe=1` 对照，所有实验验收都传 `--observe 0`，脚本默认值也为 0。理论题的代码块验收的是**提出问题所依赖的真实基线**，不代表策略已经实现。A `prefill_decode_interval`、B `prefill_max_requests`、C `chunked_prefill_size` 各有另外的行为验收。原版 Phase 1 使用 200-token 长 prompt 时，最后一块可能与短请求合批，不能稳定显示 decode-first 造成的等待；当前专用负载用 192 token 消除了这个歧义。

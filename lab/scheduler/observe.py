@@ -1,7 +1,7 @@
 """Scheduler lab workload and behavioral checks. Run on a Linux CUDA server.
 
-The trace is collected outside the scheduler implementation so the experiment
-requires no permanent logging in production code.
+The external [sched] trace is separate from the mini scheduler's opt-in
+[mini-observe] log that the student adds in Phase 0.
 """
 from __future__ import annotations
 
@@ -154,6 +154,7 @@ def main() -> None:
         default="mixed",
     )
     ap.add_argument("--budget", type=int, default=32, help="prefill token budget")
+    ap.add_argument("--observe", type=int, choices=[0, 1], default=0)
     ap.add_argument("--shared-prefix", type=int, default=0, help="observe prefix-cache reuse")
     ap.add_argument("--interval", type=int, default=None)
     ap.add_argument("--prefill-max-requests", type=int, default=None)
@@ -226,6 +227,7 @@ def main() -> None:
 
     options = dict(
         use_dummy_weight=True,
+        observe=args.observe,
         max_extend_tokens=args.budget,
         max_seq_len_override=1024,
         max_running_req=8,

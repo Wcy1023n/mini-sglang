@@ -35,3 +35,7 @@ python lab/check_mini.py --smoke --model Qwen/Qwen3-0.6B
 | 12 | ON/OFF ablation + profiler/benchmark | [Execution](execution/execution.ipynb)、[Bench Profiler](bench_profiler/bench_profiler.ipynb) | 固定负载、原始样本、trace、性能结论的适用范围 |
 
 建议顺序：Model Support → Scheduler → KV Cache → Execution → Bench Profiler。做完已有实验后，再补第 1、8、11 项的动手题；这三项目前不能据此判定毕业。
+
+## 每道题从哪里读代码
+
+五份 notebook 的具体题目都有「本题文件导航」，按顺序列出仓库根目录下的真实文件、阅读重点、负载/验收文件和可暂时跳过的模块。InternLM2 的 Phase 1–5 单列文件导航表；Scheduler Phase 0 另有 `LLM` 导入、构造与执行路线，以及不启动 CUDA 的源码定位格。导航用于找入口，不提供实现补丁或行号。

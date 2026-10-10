@@ -2,6 +2,14 @@
 
 以用户提供的原版 `sche.md` 为对照。当前教程是 [scheduler.ipynb](scheduler.ipynb)；它保留原 Phase 0–6 的学习目标，同时新增 A/B/C。原版中给出最终补丁或预设答案的内容没有复制进题面，验收改为可观察行为与需要自行推导的问题。
 
+## Phase 0 从哪里开始
+
+`LLM(...)` 的类定义在 [python/minisgl/llm/llm.py](../../python/minisgl/llm/llm.py)，先搜索 `class LLM` 并阅读 `__init__`；`from minisgl.llm import LLM` 通过包的 [__init__.py](../../python/minisgl/llm/__init__.py) 导出它。`observe` 是本题要新增的接口。验收脚本创建 `TraceLLM`，它继承 `LLM`，因此只搜索 `LLM(` 可能找不到实际构造入口。
+
+notebook 的 **「Phase 0 源码导航：先找到 LLM」** 提供逐文件入口、构造/执行调用路线、阅读问题与可跳过的模块，附带一格只读源码的定位代码，不启动 CUDA。先完成导航，再运行原有的开关对照验收格。
+
+## 原实验对应关系
+
 | 原实验 | 当前形式 | notebook 验收 |
 |---|---|---|
 | Phase 0：搭观测 | 给 mini 增加 `observe=0/1` 日志开关，对照外部轨迹 | notebook 比较开关两种输出；`long-first --observe 0 --check` |

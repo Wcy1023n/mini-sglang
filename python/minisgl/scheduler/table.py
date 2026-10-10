@@ -8,6 +8,7 @@ class TableManager:
         self.page_table = page_table
         # NOTE: dummy request also use this pool to get the input ids, so we need to
         # make sure the token pool is initialized with valid values (token_id = 0).
+        # token_pool 就是管理每个 req 已经生成了哪些 token 
         self.token_pool = torch.zeros_like(page_table, dtype=torch.int32)
 
     @property

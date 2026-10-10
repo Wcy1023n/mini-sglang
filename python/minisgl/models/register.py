@@ -16,6 +16,7 @@ _MODEL_REGISTRY = {
 def get_model_class(model_architecture: str, model_config: ModelConfig):
     if model_architecture not in _MODEL_REGISTRY:
         raise ValueError(f"Model architecture {model_architecture} not supported")
+    # 字典里取 
     module_path, class_name = _MODEL_REGISTRY[model_architecture]
     module = importlib.import_module(module_path, package=__package__)
     model_cls = getattr(module, class_name)

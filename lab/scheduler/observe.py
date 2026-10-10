@@ -39,6 +39,18 @@ class TraceLLM(LLM):
         return forward_input
 
 
+class BurstTraceLLM(TraceLLM):
+    """Submit the whole comparison workload before its first scheduling step."""
+
+    def offline_receive_msg(self, blocking: bool = False):
+        if not self.pending_requests:
+            return super().offline_receive_msg(blocking=blocking)
+        messages = []
+        while self.pending_requests:
+            messages.extend(super().offline_receive_msg(blocking=False))
+        return messages
+
+
 def check_mixed(
     trace: list[tuple[str, tuple[int, ...], int]],
     interval: int | None,
@@ -91,11 +103,55 @@ def check_chunk_limit(
         raise ValueError("--check supports --chunk-size 16 for the chunk-limit case")
 
 
+def check_long_first(trace: list[tuple[str, tuple[int, ...], int]]) -> None:
+    prefill = [reqs for phase, reqs, _ in trace if phase == "prefill"]
+    assert sum(0 in reqs for reqs in prefill) == 7, prefill
+    assert all(any(uid in reqs for reqs in prefill) for uid in range(1, 7)), prefill
+
+
+def check_stage_order(
+    trace: list[tuple[str, tuple[int, ...], int]], expected: str
+) -> None:
+    assert trace[:6] == [("prefill", (0,), 32)] * 6, trace[:8]
+    if expected == "prefill-first":
+        assert trace[6][:2] == ("prefill", (1, 2, 3, 4, 5, 6)), trace[6:8]
+    else:
+        assert all(
+            phase == "decode" and reqs == (0,)
+            for phase, reqs, _ in trace[6:15]
+        ), trace[6:16]
+        assert trace[15][:2] == ("prefill", (1, 2, 3, 4, 5, 6)), trace[15:17]
+
+
+def check_priority_baseline(trace: list[tuple[str, tuple[int, ...], int]]) -> None:
+    prefill = [reqs for phase, reqs, _ in trace if phase == "prefill"]
+    assert prefill[0] == (0, 1), prefill
+    assert sorted(uid for reqs in prefill for uid in reqs) == [0, 1, 2, 3], prefill
+
+
+def check_shortest_baseline(trace: list[tuple[str, tuple[int, ...], int]]) -> None:
+    prefill = [reqs for phase, reqs, _ in trace if phase == "prefill"]
+    assert prefill[0] == (0,), prefill
+    assert all(any(uid in reqs for reqs in prefill[1:]) for uid in range(1, 5)), prefill
+
+
+def check_lpm_baseline(trace: list[tuple[str, tuple[int, ...], int]]) -> None:
+    prefill = [reqs for phase, reqs, _ in trace if phase == "prefill"]
+    assert prefill[0] == (0, 1), prefill
+    assert trace[0][2] == 128, trace[:3]
+    assert sorted(set(uid for reqs in prefill for uid in reqs)) == [0, 1, 2], prefill
+
+
 def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--model", default="Qwen/Qwen3-0.6B")
     ap.add_argument(
-        "--case", choices=["mixed", "long-first", "no-decode", "admission", "chunk-limit"], default="mixed"
+        "--case",
+        choices=[
+            "mixed", "long-first", "stage-order", "no-decode", "admission",
+            "chunk-limit", "priority-theory", "shortest-theory", "lpm-theory",
+        ],
+        default="mixed",
     )
     ap.add_argument("--budget", type=int, default=32, help="prefill token budget")
     ap.add_argument("--shared-prefix", type=int, default=0, help="observe prefix-cache reuse")
@@ -103,11 +159,25 @@ def main() -> None:
     ap.add_argument("--prefill-max-requests", type=int, default=None)
     ap.add_argument("--chunk-size", type=int, default=None)
     ap.add_argument("--check", action="store_true", help="assert the expected observable behavior")
+    ap.add_argument("--expect-chunks", type=int, choices=[1, 7])
+    ap.add_argument(
+        "--expect-stage-order", choices=["prefill-first", "decode-first"]
+    )
     args = ap.parse_args()
-    if args.check and args.budget != (64 if args.case == "chunk-limit" else 32):
-        ap.error("--check requires budget 64 for chunk-limit and 32 for other cases")
-    if args.check and args.case == "long-first":
-        ap.error("--case long-first is an observation-only workload")
+    if args.expect_chunks is not None and args.case != "long-first":
+        ap.error("--expect-chunks requires --case long-first")
+    if args.expect_stage_order is not None and (args.case != "stage-order" or args.budget != 32):
+        ap.error("--expect-stage-order requires --case stage-order --budget 32")
+    checked_budget = {
+        "chunk-limit": 64,
+        "priority-theory": 16,
+        "shortest-theory": 24,
+        "lpm-theory": 128,
+    }.get(args.case, 32)
+    if args.check and args.budget != checked_budget:
+        ap.error(f"--check requires budget {checked_budget} for this case")
+    if args.check and args.case == "stage-order":
+        ap.error("use --expect-stage-order for the stage-order workload")
 
     if args.shared_prefix > 0:
         if args.case != "mixed" or args.check:
@@ -122,9 +192,9 @@ def main() -> None:
             SamplingParams(ignore_eos=True, max_tokens=24),
             SamplingParams(ignore_eos=True, max_tokens=4),
         ]
-    elif args.case == "long-first":
+    elif args.case in ("long-first", "stage-order"):
         prompts = [
-            [1000 + i for i in range(200)],
+            [1000 + i for i in range(200 if args.case == "long-first" else 192)],
             *[[2000 + i * 4 + j for j in range(4)] for i in range(6)],
         ]
         params = SamplingParams(ignore_eos=True, max_tokens=10)
@@ -134,6 +204,21 @@ def main() -> None:
     elif args.case == "chunk-limit":
         prompts = [[2000 + i for i in range(4)], [1000 + i for i in range(80)]]
         params = SamplingParams(ignore_eos=True, max_tokens=8)
+    elif args.case == "priority-theory":
+        prompts = [[2000 + i * 8 + j for j in range(8)] for i in range(4)]
+        params = SamplingParams(ignore_eos=True, max_tokens=5)
+    elif args.case == "shortest-theory":
+        prompts = [[1000 + i for i in range(24)]] + [
+            [2000 + i * 4 + j for j in range(4)] for i in range(4)
+        ]
+        params = SamplingParams(ignore_eos=True, max_tokens=5)
+    elif args.case == "lpm-theory":
+        prompts = [
+            [5000 + i for i in range(64)],
+            [2000 + i for i in range(64)] + [4000 + i for i in range(64)],
+            [1000 + i for i in range(128)] + [3000 + i for i in range(64)],
+        ]
+        params = SamplingParams(ignore_eos=True, max_tokens=5)
     else:
         # Six requests fit the token budget, so batch size exposes admission limits.
         prompts = [[2000 + i * 4 + j for j in range(4)] for i in range(6)]
@@ -153,7 +238,14 @@ def main() -> None:
     if args.chunk_size is not None:
         options["chunked_prefill_size"] = args.chunk_size
 
-    llm = TraceLLM(args.model, **options)
+    use_burst = args.case in ("priority-theory", "shortest-theory", "lpm-theory")
+    llm = (BurstTraceLLM if use_burst else TraceLLM)(args.model, **options)
+    if args.case == "lpm-theory":
+        llm.generate(
+            [[1000 + i for i in range(128)], [2000 + i for i in range(64)]],
+            SamplingParams(ignore_eos=True, max_tokens=5),
+        )
+        llm.trace.clear()
     results = llm.generate(prompts, params)
     assert len(results) == len(prompts)
     expected_lengths = (
@@ -162,6 +254,15 @@ def main() -> None:
         else [params.max_tokens] * len(prompts)
     )
     assert [len(result["token_ids"]) for result in results] == expected_lengths
+    if args.expect_chunks is not None:
+        actual = sum(
+            phase == "prefill" and 0 in reqs for phase, reqs, _ in llm.trace
+        )
+        assert actual == args.expect_chunks, (actual, llm.trace)
+        print("[check] chunks PASS")
+    if args.expect_stage_order is not None:
+        check_stage_order(llm.trace, args.expect_stage_order)
+        print("[check] stage-order PASS")
     if args.check:
         if args.case == "mixed":
             check_mixed(llm.trace, args.interval, args.prefill_max_requests)
@@ -170,6 +271,14 @@ def main() -> None:
             assert phases[:4] == ["prefill"] * 4, phases[:8]
         elif args.case == "chunk-limit":
             check_chunk_limit(llm.trace, args.chunk_size)
+        elif args.case == "long-first":
+            check_long_first(llm.trace)
+        elif args.case == "priority-theory":
+            check_priority_baseline(llm.trace)
+        elif args.case == "shortest-theory":
+            check_shortest_baseline(llm.trace)
+        elif args.case == "lpm-theory":
+            check_lpm_baseline(llm.trace)
         else:
             check_admission(llm.trace, args.prefill_max_requests)
         print("[check] PASS")

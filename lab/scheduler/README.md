@@ -4,9 +4,9 @@
 
 ## Phase 0 从哪里开始
 
-`LLM(...)` 的类定义在 [python/minisgl/llm/llm.py](../../python/minisgl/llm/llm.py)，先搜索 `class LLM` 并阅读 `__init__`；`from minisgl.llm import LLM` 通过包的 [__init__.py](../../python/minisgl/llm/__init__.py) 导出它。`observe` 是本题要新增的接口。验收脚本创建 `TraceLLM`，它继承 `LLM`，因此只搜索 `LLM(` 可能找不到实际构造入口。
+从 [SchedulerConfig](../../python/minisgl/scheduler/config.py) 开始：验收脚本通过现有离线调用传入 `observe=0/1`，额外关键字参数已经转交配置。然后看 [Scheduler](../../python/minisgl/scheduler/scheduler.py) 怎样创建 [PrefillManager](../../python/minisgl/scheduler/prefill.py) 和 [DecodeManager](../../python/minisgl/scheduler/decode.py)。三个位置共用开关，但两个 manager 是独立对象；本题不要求在 `LLM` 类中保存开关或修改其方法。[ServerArgs](../../python/minisgl/server/args.py) 继承 `SchedulerConfig`，在线调度器也使用这套配置定义；本题只验收离线调用，在线命令行参数解析暂不验收。
 
-notebook 的 **「Phase 0 源码导航：先找到 LLM」** 提供逐文件入口、构造/执行调用路线、阅读问题与可跳过的模块，附带一格只读源码的定位代码，不启动 CUDA。先完成导航，再运行原有的开关对照验收格。
+notebook 的 **「Phase 0 源码导航：从配置到三个观测位置」** 提供逐文件入口、开关传递问题与只读源码定位格，不启动 CUDA。完成导航后运行开关对照验收格。
 
 ## 原实验对应关系
 
@@ -20,4 +20,4 @@ notebook 的 **「Phase 0 源码导航：先找到 LLM」** 提供逐文件入�
 | Phase 5：SRPT | 理论题：原始长度、剩余 prefill 与完整请求工作量 | `shortest-theory --check` 验证长请求先行，再交反例 |
 | Phase 6：LPM | 理论题：缓存复用与排序效果分离 | `lpm-theory --check` 验证 FCFS 基线，再交 LPM 预期 |
 
-`observe.py` 的 `[sched]` 是实验脚本提供的外部轨迹；Phase 0 的 `[mini-observe]` 是学生要在 mini 内实现的可开关日志。除 Phase 0 的 `observe=1` 对照，所有实验验收都传 `--observe 0`，脚本默认值也为 0。理论题的代码块验收的是**提出问题所依赖的真实基线**，不代表策略已经实现。A `prefill_decode_interval`、B `prefill_max_requests`、C `chunked_prefill_size` 各有另外的行为验收。原版 Phase 1 使用 200-token 长 prompt 时，最后一块可能与短请求合批，不能稳定显示 decode-first 造成的等待；当前专用负载用 192 token 消除了这个歧义。
+`observe.py` 的 `[sched]` 是实验脚本提供的外部轨迹；Phase 0 要在 mini 内实现 `[mini-observe]`（选中 batch）、`[mini-prefill]`（准入）、`[mini-decode]`（running）三处可开关日志。除 Phase 0 的 `observe=1` 对照，所有实验验收都传 `--observe 0`，脚本默认值也为 0。理论题的代码块验收的是**提出问题所依赖的真实基线**，不代表策略已经实现。A `prefill_decode_interval`、B `prefill_max_requests`、C `chunked_prefill_size` 各有另外的行为验收。原版 Phase 1 使用 200-token 长 prompt 时，最后一块可能与短请求合批，不能稳定显示 decode-first 造成的等待；当前专用负载用 192 token 消除了这个歧义。

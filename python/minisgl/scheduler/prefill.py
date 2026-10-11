@@ -8,6 +8,7 @@ from minisgl.core import Batch, Req
 from minisgl.utils import init_logger
 
 from .utils import PendingReq
+from minisgl.env import ENV
 
 if TYPE_CHECKING:
     from minisgl.kvcache import BaseCacheHandle
@@ -162,7 +163,12 @@ class PrefillManager:
         
         # 重建 list 是为了 未完成的 chunkedReq 优先 
         self.pending_list = chunked_list + self.pending_list[len(reqs) :]
-        return Batch(reqs=reqs, phase="prefill")
+        if ENV.OBSERVE:
+            print(
+                f"[mini-{"prefill" if req.__class__.__name__ is "Req" else "Chunk-prefill" }]: reqs={[req.uid for req in reqs]}",
+                flush=True,
+            )
+        return Batch(reqs=reqs, phase="prefill" if req.__class__.__name__ is "Req" else "Chunk-prefill")
 
     def abort_req(self, uid: int) -> Req | None:
         for i, req in enumerate(self.pending_list):

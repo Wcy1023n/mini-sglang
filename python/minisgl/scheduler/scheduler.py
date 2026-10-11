@@ -220,8 +220,18 @@ class Scheduler(SchedulerIOMixin):
         # TODO: support other policies: e.g. DECODE first
         batch = (
             self.prefill_manager.schedule_next_batch(self.prefill_budget)
-            or self.decode_manager.schedule_next_batch()
+            or
+            self.decode_manager.schedule_next_batch()
         )
+        if batch is not None and ENV.OBSERVE:
+            print(
+                f"[mini-observe] phase={batch.phase} "
+                f"batch_size={len(batch.reqs)} "
+                f"tokens={sum(req.extend_len for req in batch.reqs)} "
+                f"waiting={len(self.prefill_manager.pending_list)} "
+                f"running={len(self.decode_manager.running_reqs)}",
+                flush=True,
+            )
         return self._prepare_batch(batch) if batch else None
 
     def _forward(self, forward_input: ForwardInput) -> ForwardOutput:

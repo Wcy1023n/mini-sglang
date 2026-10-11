@@ -4,6 +4,7 @@ from dataclasses import dataclass, field
 from typing import Iterable, Set
 
 from minisgl.core import Batch, Req
+from minisgl.env import ENV
 
 
 @dataclass
@@ -32,7 +33,14 @@ class DecodeManager:
     def schedule_next_batch(self) -> Batch | None:
         if not self.runnable:
             return None
-        return Batch(reqs=sorted(self.running_reqs, key=lambda req: req.uid), phase="decode")
+
+        reqs=sorted(self.running_reqs, key=lambda req: req.uid)
+        if ENV.OBSERVE:
+            print(
+                f"[mini-decode]: reqs={[req.uid for req in reqs]}",
+                flush=True,
+            )
+        return Batch(reqs, phase="decode")
 
     @property
     def runnable(self) -> bool:

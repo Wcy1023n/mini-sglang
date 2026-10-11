@@ -58,11 +58,25 @@ class BurstTraceLLM(TraceLLM):
         return messages
 
 
+def validation_trace(
+    trace: list[tuple[str, tuple[int, ...], int]],
+) -> list[tuple[str, tuple[int, ...], int]]:
+    """Accept descriptive chunk labels without changing the raw trace or batches."""
+    aliases = {
+        "prefill": "prefill",
+        "chunk-prefill": "prefill",
+        "chunked-prefill": "prefill",
+        "decode": "decode",
+    }
+    return [(aliases.get(phase.casefold(), phase), reqs, tokens) for phase, reqs, tokens in trace]
+
+
 def check_mixed(
     trace: list[tuple[str, tuple[int, ...], int]],
     interval: int | None,
     limit: int | None,
 ) -> None:
+    trace = validation_trace(trace)
     phases = [phase for phase, _, _ in trace]
     if limit == 1:
         prefill = [reqs for phase, reqs, _ in trace if phase == "prefill"]
@@ -83,6 +97,7 @@ def check_mixed(
 def check_admission(
     trace: list[tuple[str, tuple[int, ...], int]], limit: int | None
 ) -> None:
+    trace = validation_trace(trace)
     prefill = [reqs for phase, reqs, _ in trace if phase == "prefill"]
     admitted = [uid for reqs in prefill for uid in reqs]
     assert sorted(admitted) == list(range(6)), prefill
@@ -97,6 +112,7 @@ def check_admission(
 def check_chunk_limit(
     trace: list[tuple[str, tuple[int, ...], int]], chunk_size: int | None
 ) -> None:
+    trace = validation_trace(trace)
     prefill = [(reqs, tokens) for phase, reqs, tokens in trace if phase == "prefill"]
     assert sum(tokens for _, tokens in prefill) == 84, prefill
     assert prefill[0][0] == (0, 1), prefill
@@ -111,6 +127,7 @@ def check_chunk_limit(
 
 
 def check_long_first(trace: list[tuple[str, tuple[int, ...], int]]) -> None:
+    trace = validation_trace(trace)
     prefill = [reqs for phase, reqs, _ in trace if phase == "prefill"]
     assert sum(0 in reqs for reqs in prefill) == 7, prefill
     assert all(any(uid in reqs for reqs in prefill) for uid in range(1, 7)), prefill
@@ -119,6 +136,7 @@ def check_long_first(trace: list[tuple[str, tuple[int, ...], int]]) -> None:
 def check_stage_order(
     trace: list[tuple[str, tuple[int, ...], int]], expected: str
 ) -> None:
+    trace = validation_trace(trace)
     assert trace[:6] == [("prefill", (0,), 32)] * 6, trace[:8]
     if expected == "prefill-first":
         assert trace[6][:2] == ("prefill", (1, 2, 3, 4, 5, 6)), trace[6:8]
@@ -131,18 +149,21 @@ def check_stage_order(
 
 
 def check_priority_baseline(trace: list[tuple[str, tuple[int, ...], int]]) -> None:
+    trace = validation_trace(trace)
     prefill = [reqs for phase, reqs, _ in trace if phase == "prefill"]
     assert prefill[0] == (0, 1), prefill
     assert sorted(uid for reqs in prefill for uid in reqs) == [0, 1, 2, 3], prefill
 
 
 def check_shortest_baseline(trace: list[tuple[str, tuple[int, ...], int]]) -> None:
+    trace = validation_trace(trace)
     prefill = [reqs for phase, reqs, _ in trace if phase == "prefill"]
     assert prefill[0] == (0,), prefill
     assert all(any(uid in reqs for reqs in prefill[1:]) for uid in range(1, 5)), prefill
 
 
 def check_lpm_baseline(trace: list[tuple[str, tuple[int, ...], int]]) -> None:
+    trace = validation_trace(trace)
     prefill = [reqs for phase, reqs, _ in trace if phase == "prefill"]
     assert prefill[0] == (0, 1), prefill
     assert trace[0][2] == 128, trace[:3]
@@ -267,7 +288,7 @@ def main() -> None:
     assert [len(result["token_ids"]) for result in results] == expected_lengths
     if args.expect_chunks is not None:
         actual = sum(
-            phase == "prefill" and 0 in reqs for phase, reqs, _ in llm.trace
+            phase == "prefill" and 0 in reqs for phase, reqs, _ in validation_trace(llm.trace)
         )
         assert actual == args.expect_chunks, (actual, llm.trace)
         print("[check] chunks PASS")
@@ -278,7 +299,7 @@ def main() -> None:
         if args.case == "mixed":
             check_mixed(llm.trace, args.interval, args.prefill_max_requests)
         elif args.case == "no-decode":
-            phases = [phase for phase, _, _ in llm.trace]
+            phases = [phase for phase, _, _ in validation_trace(llm.trace)]
             assert phases[:4] == ["prefill"] * 4, phases[:8]
         elif args.case == "chunk-limit":
             check_chunk_limit(llm.trace, args.chunk_size)

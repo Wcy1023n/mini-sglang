@@ -20,6 +20,7 @@ class SchedulerConfig(EngineConfig):
     # networking config
     _unique_suffix: str = field(default_factory=_get_pid_suffix)
 
+    # tokenizer ，scheduler ，detokenizer 三个进程间通信地址（甚至不止一个scheduler）
     @property
     def zmq_backend_addr(self) -> str:
         return "ipc:///tmp/minisgl_0" + self._unique_suffix

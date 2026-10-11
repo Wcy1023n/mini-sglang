@@ -92,6 +92,7 @@ class Batch:
     def size(self) -> int:
         return len(self.reqs)
 
+    # 批次大小固定而使用的 气泡pad 填充
     @property
     def padded_size(self) -> int:
         return len(self.padded_reqs)

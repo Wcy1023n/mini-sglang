@@ -6,10 +6,17 @@ The external [sched] trace is separate from the mini scheduler's opt-in
 from __future__ import annotations
 
 import argparse
+import os
 import platform
 
 if platform.system() != "Linux":
     raise RuntimeError("This experiment must run on the Linux CUDA server.")
+
+# ENV reads environment variables on import. Configure the lab switch first.
+observe_parser = argparse.ArgumentParser(add_help=False, allow_abbrev=False)
+observe_parser.add_argument("--observe", type=int, choices=[0, 1], default=0)
+observe_args, _ = observe_parser.parse_known_args()
+os.environ["MINISGL_OBSERVE"] = str(observe_args.observe)
 
 import torch
 
@@ -143,7 +150,7 @@ def check_lpm_baseline(trace: list[tuple[str, tuple[int, ...], int]]) -> None:
 
 
 def main() -> None:
-    ap = argparse.ArgumentParser()
+    ap = argparse.ArgumentParser(allow_abbrev=False)
     ap.add_argument("--model", default="Qwen/Qwen3-0.6B")
     ap.add_argument(
         "--case",
@@ -154,7 +161,10 @@ def main() -> None:
         default="mixed",
     )
     ap.add_argument("--budget", type=int, default=32, help="prefill token budget")
-    ap.add_argument("--observe", type=int, choices=[0, 1], default=0)
+    ap.add_argument(
+        "--observe", type=int, choices=[0, 1], default=0,
+        help="set MINISGL_OBSERVE before importing mini; default: off",
+    )
     ap.add_argument("--shared-prefix", type=int, default=0, help="observe prefix-cache reuse")
     ap.add_argument("--interval", type=int, default=None)
     ap.add_argument("--prefill-max-requests", type=int, default=None)
@@ -227,7 +237,6 @@ def main() -> None:
 
     options = dict(
         use_dummy_weight=True,
-        observe=args.observe,
         max_extend_tokens=args.budget,
         max_seq_len_override=1024,
         max_running_req=8,

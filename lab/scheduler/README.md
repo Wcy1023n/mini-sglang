@@ -4,9 +4,11 @@
 
 ## Phase 0 从哪里开始
 
-从 [SchedulerConfig](../../python/minisgl/scheduler/config.py) 开始：验收脚本通过现有离线调用传入 `observe=0/1`，额外关键字参数已经转交配置。然后看 [Scheduler](../../python/minisgl/scheduler/scheduler.py) 怎样创建 [PrefillManager](../../python/minisgl/scheduler/prefill.py) 和 [DecodeManager](../../python/minisgl/scheduler/decode.py)。三个位置共用开关，但两个 manager 是独立对象；本题不要求在 `LLM` 类中保存开关或修改其方法。[ServerArgs](../../python/minisgl/server/args.py) 继承 `SchedulerConfig`，在线调度器也使用这套配置定义；本题只验收离线调用，在线命令行参数解析暂不验收。
+从 [python/minisgl/env.py](../../python/minisgl/env.py) 开始：mini 已有各模块可导入的模块级 `ENV` 单例，scheduler 已用它控制 overlap。Phase 0 沿用这套机制，新增由 `MINISGL_OBSERVE=0/1` 控制、默认关闭的进程级全局观测开关。`SchedulerConfig` 是实例配置类，导入它本身不会得到同一份配置对象。
 
-notebook 的 **「Phase 0 源码导航：从配置到三个观测位置」** 提供逐文件入口、开关传递问题与只读源码定位格，不启动 CUDA。完成导航后运行开关对照验收格。
+接着读三个日志位置：[python/minisgl/scheduler/scheduler.py](../../python/minisgl/scheduler/scheduler.py) 的选批次、[python/minisgl/scheduler/prefill.py](../../python/minisgl/scheduler/prefill.py) 的准入、[python/minisgl/scheduler/decode.py](../../python/minisgl/scheduler/decode.py) 的 running 集合。三个模块读取同一个进程内的全局配置；开关无须经 `LLM` 或 manager 的构造参数传递。
+
+验收脚本的 `--observe 0/1` 在导入 mini **之前**设置 `MINISGL_OBSERVE`，不再把 `observe` 传给 `LLM`。在线服务也可从启动环境读取该值；各进程有自己的 `ENV`，本题不要求跨进程动态改值。notebook 的 **「Phase 0 源码导航：全局开关放哪里，三个模块去哪里读」** 提供这些文件的阅读重点与只读定位格。
 
 ## 原实验对应关系
 

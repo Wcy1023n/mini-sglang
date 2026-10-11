@@ -38,4 +38,4 @@ python lab/check_mini.py --smoke --model Qwen/Qwen3-0.6B
 
 ## 每道题从哪里读代码
 
-五份 notebook 的具体题目都有「本题文件导航」，按顺序列出仓库根目录下的真实文件、阅读重点、负载/验收文件和可暂时跳过的模块。InternLM2 的 Phase 1–5 单列文件导航表；Scheduler Phase 0 另有 `LLM` 导入、构造与执行路线，以及不启动 CUDA 的源码定位格。导航用于找入口，不提供实现补丁或行号。
+五份 notebook 的具体题目都有「本题文件导航」，按顺序列出仓库根目录下的真实文件、阅读重点、负载/验收文件和可暂时跳过的模块。InternLM2 的 Phase 1–5 单列文件导航表；Scheduler Phase 0 从 `python/minisgl/env.py` 的全局 `ENV` 开关追到 scheduler/prefill/decode，另有不启动 CUDA 的源码定位格。导航用于找入口，不提供实现补丁或行号。

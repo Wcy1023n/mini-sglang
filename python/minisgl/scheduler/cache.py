@@ -33,6 +33,7 @@ class CacheManager:
     def available_size(self) -> int:
         return self.prefix_cache.size_info.evictable_size + len(self.free_slots) * self.page_size
 
+    # 这个 lock 不是互斥原子锁，而是防止 LRU 把没使用完的 KV cache 换出
     def lock(self, handle: BaseCacheHandle) -> None:
         self.prefix_cache.lock_handle(handle, unlock=False)
 

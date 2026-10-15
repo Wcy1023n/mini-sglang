@@ -27,9 +27,11 @@ class DecodeManager:
 
     @property
     def inflight_tokens(self) -> int:
+        # 每个请求额外预留约 1 个 page 的余量 + 所有的 remain 预算
         tokens_reserved = (self.page_size - 1) * len(self.running_reqs)  # 1 page reserved
         return sum(req.remain_len for req in self.running_reqs) + tokens_reserved
 
+    # 无需限制 decode 数量，因为早在准入阶段就用 reserved_size 与 inflight_tokens 约束了
     def schedule_next_batch(self) -> Batch | None:
         if not self.runnable:
             return None

@@ -129,6 +129,7 @@ def check_offline(model: str, real_weights: bool, graph: bool) -> None:
                 self.batches.append((batch.phase, sum(req.extend_len for req in batch.reqs)))
             return forward_input
 
+    # 创建 LLM 类
     llm = TraceLLM(
         model,
         use_dummy_weight=not real_weights,
@@ -141,6 +142,7 @@ def check_offline(model: str, real_weights: bool, graph: bool) -> None:
     try:
         long_prompt = list(range(1000, 1064))
         params = SamplingParams(ignore_eos=True, max_tokens=4)
+        # 开始 generate 
         output = llm.generate([long_prompt, [2000, 2001, 2002, 2003]], params)
         lengths = [len(item["token_ids"]) for item in output]
         assert lengths == [4, 4], f"unexpected output lengths: {lengths}"

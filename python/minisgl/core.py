@@ -29,16 +29,17 @@ class SamplingParams:
 class Req:
     input_ids: torch.Tensor  # cpu tensor
     table_idx: int
-    cached_len: int
+    cached_len: int  # Radix 已前缀缓存 KV cache 长度
     output_len: int
     uid: int
     sampling_params: SamplingParams
     cache_handle: BaseCacheHandle
 
+    # __init__ 执行完之后才执行 __post_init__
     def __post_init__(self) -> None:
         assert self.input_ids.is_cpu
-        self.device_len = len(self.input_ids)
-        self.max_device_len = len(self.input_ids) + self.output_len
+        self.device_len = len(self.input_ids)  # 单次 forward 计算终点
+        self.max_device_len = len(self.input_ids) + self.output_len # 所有总长度上限
         assert 0 <= self.cached_len < self.device_len <= self.max_device_len
 
     @property
@@ -46,9 +47,11 @@ class Req:
         return self.max_device_len - self.device_len
 
     @property
+    # 本次 forward 还需要计算的 token 数
     def extend_len(self) -> int:
         return self.device_len - self.cached_len
 
+    # forward 完成后，Req 状态更新
     def complete_one(self) -> None:
         self.cached_len = self.device_len
         self.device_len += 1

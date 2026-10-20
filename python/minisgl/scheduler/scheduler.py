@@ -32,6 +32,7 @@ Indice2D: TypeAlias = Tuple[torch.Tensor, torch.Tensor]
 
 
 # For overlap scheduling, we also need to cache some other data to avoid IMA
+# IMA (非法内存访问) 发生在 GPU forward 完成后，CPU 还没来得及处理结果就修改数据 / 释放资源
 class ForwardInput(NamedTuple):
     batch: Batch
     sample_args: BatchSamplingArgs
@@ -92,17 +93,25 @@ class Scheduler(SchedulerIOMixin):
             or self.prefill_manager.runnable
             or self.decode_manager.runnable
         )
+        # 接受消息
         for msg in self.receive_msg(blocking=blocking):
             self._process_one_msg(msg)
 
+        # 准备下一批 T，返回 ForwardInput 对象
         forward_input = self._schedule_next_batch()
+        # launch T GPU forward
         ongoing_data = None
         if forward_input is not None:
+            # engine 上下文切换
             with self.engine_stream_ctx:  # run the batch in the engine's stream
+                # 同步确保 scheduler stream 结束才开始 engine stream
                 self.engine.stream.wait_stream(self.stream)
+                # 不等 forward 完成，而是提前返回 句柄
                 ongoing_data = (forward_input, self._forward(forward_input))
 
+        # 处理上一批 T - 1 的句柄，兑换成最终 token
         self._process_last_data(last_data)
+        # 批次 T 的未完成句柄 ，非已产生中间结果
         return ongoing_data
 
     def normal_loop(self) -> None:
@@ -140,16 +149,21 @@ class Scheduler(SchedulerIOMixin):
             return
 
         batch, (_, next_tokens_cpu, copy_done) = last_data[0].batch, last_data[1]
+        # GPU2CPU copy is async, we need to synchronize before accessing the data
         copy_done.synchronize()
+        # 发给 Detokenizer 的消息队列
         reply: List[DetokenizeMsg] = []
         new_finished_reqs: Set[Req] = set()
-        with self.cache_manager.lazy_free_region():
+        with self.cache_manager.lazy_free_region():  # 多次待释放的资源合并，等块结束后统一处理
+            # 遍历整个 batch 里的所有 Req
             for i, req in enumerate(batch.reqs):
-                if isinstance(req, ChunkedReq):
+                if isinstance(req, ChunkedReq):  # chunkReq 本轮没有生成新 token ，不需要 detoken
                     continue
+                # 准备 req_id , next_token , finished 状态，打包成 Msg 加入 reply
                 next_token = next_tokens_cpu[i]
                 req.append_host(next_token.unsqueeze(0))
                 next_token = int(next_token.item())
+                # 通过 finished 状态判断请求是否结束 (! can_decode || next_token == EOS)
                 finished = not req.can_decode
                 if not req.sampling_params.ignore_eos:
                     finished |= next_token == self.eos_token_id
@@ -161,11 +175,13 @@ class Scheduler(SchedulerIOMixin):
                     self._free_req_resources(req)
                     new_finished_reqs.add(req)
                 elif batch.is_prefill:  # for prefill, non-chunk req, cache the prefix
-                    self.cache_manager.cache_req(req, finished=False)
-
+                    self.cache_manager.cache_req(req, finished=False) # 缓存前缀
+        # with 结束，自动释放延迟资源
+        # 发 reply 给 detokenizer
         self.finished_reqs = new_finished_reqs
         self.send_result(reply)
 
+    # Msg 进 prefill 的 pending_list
     def _process_one_msg(self, msg: BaseBackendMsg) -> None:
         if isinstance(msg, BatchBackendMsg):
             for msg in msg.data:
@@ -201,6 +217,7 @@ class Scheduler(SchedulerIOMixin):
         self.table_manager.free(req.table_idx)
         self.cache_manager.cache_req(req, finished=True)
 
+    # 讲 ScheduleBatch 对象变成 GPU forward 所需的输入对象 ForwardInput
     def _prepare_batch(self, batch: Batch) -> ForwardInput:
         self.engine.graph_runner.pad_batch(batch)
         self.cache_manager.allocate_paged(batch.reqs)
@@ -242,7 +259,7 @@ class Scheduler(SchedulerIOMixin):
         self.decode_manager.filter_reqs(forward_input.batch.reqs)
         return forward_output
 
-
+# range from [ cached_len , device_len )
 def _make_positions(batch: Batch, device: torch.device) -> torch.Tensor:
     needed_size = sum(r.extend_len for r in batch.padded_reqs)
     indices_host = torch.empty(needed_size, dtype=torch.int32, pin_memory=True)

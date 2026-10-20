@@ -31,6 +31,7 @@ class TraceLLM(LLM):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self.trace: list[tuple[str, tuple[int, ...], int]] = []
+        self.trace_extends: list[tuple[int, ...]] = []
 
     def _schedule_next_batch(self):
         forward_input = super()._schedule_next_batch()
@@ -42,7 +43,13 @@ class TraceLLM(LLM):
                 sum(req.extend_len for req in batch.reqs),
             )
             self.trace.append(step)
-            print(f"[sched] {step[0]:7s} reqs={list(step[1])} tokens={step[2]}", flush=True)
+            extends = tuple(req.extend_len for req in batch.reqs)
+            self.trace_extends.append(extends)
+            print(
+                f"[sched] {step[0]:7s} reqs={list(step[1])} "
+                f"tokens={step[2]} qlens={list(extends)}",
+                flush=True,
+            )
         return forward_input
 
 
@@ -170,13 +177,36 @@ def check_lpm_baseline(trace: list[tuple[str, tuple[int, ...], int]]) -> None:
     assert sorted(set(uid for reqs in prefill for uid in reqs)) == [0, 1, 2], prefill
 
 
+def check_mixed_batch(
+    trace: list[tuple[str, tuple[int, ...], int]],
+    trace_extends: list[tuple[int, ...]],
+    enabled: bool,
+    budget: int,
+) -> None:
+    assert trace[0][:2] == ("prefill", (0, 1)), trace[:4]
+    assert len(trace) == len(trace_extends)
+    mixed_steps = []
+    for (phase, reqs, total), qlens in zip(trace, trace_extends):
+        assert len(reqs) == len(qlens) and sum(qlens) == total
+        assert total <= budget, (phase, reqs, qlens, budget)
+        assert len(reqs) == len(set(reqs)), (phase, reqs)
+        if 0 in reqs and 1 in reqs:
+            by_uid = dict(zip(reqs, qlens))
+            if by_uid[0] == 1 and by_uid[1] > 1:
+                mixed_steps.append((phase, reqs, qlens))
+    if enabled:
+        assert mixed_steps and all(phase == "mixed" for phase, _, _ in mixed_steps), mixed_steps
+    else:
+        assert not mixed_steps and all(phase != "mixed" for phase, _, _ in trace), trace[:8]
+
+
 def main() -> None:
     ap = argparse.ArgumentParser(allow_abbrev=False)
     ap.add_argument("--model", default="Qwen/Qwen3-0.6B")
     ap.add_argument(
         "--case",
         choices=[
-            "mixed", "long-first", "stage-order", "no-decode", "admission",
+            "mixed", "mixed-batch", "long-first", "stage-order", "no-decode", "admission",
             "chunk-limit", "priority-theory", "shortest-theory", "lpm-theory",
         ],
         default="mixed",
@@ -190,6 +220,8 @@ def main() -> None:
     ap.add_argument("--interval", type=int, default=None)
     ap.add_argument("--prefill-max-requests", type=int, default=None)
     ap.add_argument("--chunk-size", type=int, default=None)
+    ap.add_argument("--enable-mixed-batch", action="store_true")
+    ap.add_argument("--cuda-graph-max-bs", type=int, default=8)
     ap.add_argument("--check", action="store_true", help="assert the expected observable behavior")
     ap.add_argument("--expect-chunks", type=int, choices=[1, 7])
     ap.add_argument(
@@ -210,6 +242,8 @@ def main() -> None:
         ap.error(f"--check requires budget {checked_budget} for this case")
     if args.check and args.case == "stage-order":
         ap.error("use --expect-stage-order for the stage-order workload")
+    if args.enable_mixed_batch and args.case not in ("mixed-batch", "no-decode"):
+        ap.error("--enable-mixed-batch requires --case mixed-batch or no-decode")
 
     if args.shared_prefix > 0:
         if args.case != "mixed" or args.check:
@@ -217,7 +251,7 @@ def main() -> None:
         prefix = list(range(args.shared_prefix))
         prompts = [prefix + [9000 + i] * 4 for i in range(7)]
         params = SamplingParams(ignore_eos=True, max_tokens=5)
-    elif args.case == "mixed":
+    elif args.case in ("mixed", "mixed-batch"):
         # R0 enters decode while R1 still needs prefill chunks.
         prompts = [[2000, 2001, 2002, 2003], [1000 + i for i in range(200)]]
         params = [
@@ -261,8 +295,12 @@ def main() -> None:
         max_extend_tokens=args.budget,
         max_seq_len_override=1024,
         max_running_req=8,
-        cuda_graph_max_bs=8,
+        cuda_graph_max_bs=args.cuda_graph_max_bs,
     )
+    if args.case == "mixed-batch" or args.enable_mixed_batch:
+        options["attention_backend"] = "fi"
+    if args.enable_mixed_batch:
+        options["enable_mixed_batch"] = True
     if args.interval is not None:
         options["prefill_decode_interval"] = args.interval
     if args.prefill_max_requests is not None:
@@ -295,9 +333,14 @@ def main() -> None:
     if args.expect_stage_order is not None:
         check_stage_order(llm.trace, args.expect_stage_order)
         print("[check] stage-order PASS")
+    if args.case == "mixed-batch":
+        for uid, result in enumerate(results):
+            print(f"[tokens] uid={uid} ids={result['token_ids']}")
     if args.check:
         if args.case == "mixed":
             check_mixed(llm.trace, args.interval, args.prefill_max_requests)
+        elif args.case == "mixed-batch":
+            check_mixed_batch(llm.trace, llm.trace_extends, args.enable_mixed_batch, args.budget)
         elif args.case == "no-decode":
             phases = [phase for phase, _, _ in validation_trace(llm.trace)]
             assert phases[:4] == ["prefill"] * 4, phases[:8]
